@@ -1,5 +1,5 @@
-// WordFlow v4: prefer fresh files online; use the precache when offline.
-const CACHE = 'wordflow-offline-v4';
+// WordFlow v5: prefer fresh files online; use the precache when offline.
+const CACHE = 'wordflow-offline-v5';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './cards.json',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'

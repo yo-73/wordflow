@@ -3,7 +3,8 @@ const STORAGE_KEY='wordflow-state-v1'; // stable key: preserve v1-v3 learning re
 const DEFAULT_STATE={custom:[],overrides:{},hidden:[],history:[],activeSession:null,ui:{mode:'random',size:20,scope:'all',level:'all'}};
 const MODES={
   random:{icon:'⤨',name:'ランダム',desc:'好きな枚数をシャッフル'},
-  mistakes:{icon:'↺',name:'間違い復習',desc:'間違いが多い順に優先'},
+  mistakes:{icon:'↺',name:'復習リストからランダム',desc:'復習待ちのカードを毎回シャッフル'},
+  todayMisses:{icon:'☀',name:'今日の間違いからランダム',desc:'今日「まだ」と判定したカードから出題'},
   idioms:{icon:'✧',name:'熟語集中',desc:'準1級以上の熟語だけ'},
   conversation:{icon:'◉',name:'会話表現',desc:'入試で問われる自然な返答'},
   new:{icon:'◇',name:'未学習',desc:'まだ見たことのない表現'},
@@ -68,6 +69,10 @@ function metrics(){
   }
   return map;
 }
+function todaysMissedIds(){
+  const today=dateKey(Date.now()),aliases=oldImportAliases();
+  return new Set(state.history.filter(h=>h&&!h.correct&&dateKey(h.at)===today).map(h=>aliases.get(h.id)||h.id));
+}
 function activeMisses(){const m=metrics();return allCards().filter(c=>m.get(c.id)?.active).sort((a,b)=>m.get(b.id).lastMiss-m.get(a.id).lastMiss);}
 function currentDay(){const d=dateKey(Date.now());const arr=state.history.filter(h=>dateKey(h.at)===d);return {total:arr.length,correct:arr.filter(h=>h.correct).length};}
 function studyStreak(){
@@ -111,7 +116,8 @@ function renderHome(){
 function poolFor(mode){
   const entries=allCards();const stat=metrics();
   let candidates;
-  if(mode==='conversation')candidates=entries.filter(isConversation);
+  if(mode==='mistakes'||mode==='todayMisses')candidates=entries; // 復習対象に出題範囲フィルターをかけない
+  else if(mode==='conversation')candidates=entries.filter(isConversation);
   else if(mode==='idioms')candidates=entries.filter(e=>e.kind==='idiom'&&!isConversation(e)&&(state.ui.level==='all'||e.level===state.ui.level));
   else {
     candidates=entries.filter(e=>state.ui.level==='all'||e.level===state.ui.level);
@@ -120,6 +126,7 @@ function poolFor(mode){
     else if(state.ui.scope!=='all')candidates=candidates.filter(e=>e.kind===state.ui.scope);
   }
   if(mode==='mistakes')candidates=candidates.filter(e=>stat.get(e.id)?.active);
+  if(mode==='todayMisses'){const missed=todaysMissedIds();candidates=candidates.filter(e=>missed.has(e.id));}
   if(mode==='new')candidates=candidates.filter(e=>!stat.has(e.id));
   if(mode==='due')candidates=candidates.filter(e=>stat.has(e.id)&&stat.get(e.id).due<=Date.now());
   return candidates;
@@ -127,15 +134,10 @@ function poolFor(mode){
 function shuffle(arr){for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}return arr;}
 function startSession(mode=state.ui.mode){
   const pool=poolFor(mode);
-  if(!pool.length){toast(mode==='mistakes'?'復習する単語はありません':'この条件に合う単語がありません。設定を変更してください。');return;}
+  if(!pool.length){toast(mode==='mistakes'?'復習待ちの単語はありません':mode==='todayMisses'?'今日間違えた単語はまだありません':'この条件に合う単語がありません。設定を変更してください。');return;}
   if(state.activeSession&&state.activeSession.index<state.activeSession.ids.length){if(!confirm('途中の学習を終了して、新しい学習を始めますか？'))return;}
-  // In targeted modes, prefer high-priority cards instead of reshuffling everything.
-  const stat=metrics();
-  const ordered=(mode==='mistakes')?pool.slice().sort((a,b)=>{
-    const x=stat.get(a.id),y=stat.get(b.id);
-    const score=t=>(t?.missed||0)*5-(t?.correctSinceMiss||0)*2+(t?.due<=Date.now()?3:0);
-    return score(y)-score(x)||(x?.lastMiss||0)-(y?.lastMiss||0);
-  }):(mode==='due')?pool.slice().sort((a,b)=>(stat.get(a.id)?.due||0)-(stat.get(b.id)?.due||0)):shuffle(pool.slice());
+  // すべての出題モードで Fisher–Yates によって順番をランダム化する。
+  const ordered=shuffle(pool.slice());
   state.activeSession={ids:ordered.slice(0,Number(state.ui.size)||20).map(c=>c.id),index:0,answers:[],mode,startedAt:Date.now(),flipped:false};
   save();setPage('study');
 }
@@ -236,7 +238,7 @@ function renderReview(){
   return `<div class="eyebrow">REVIEW LIBRARY</div><h1 style="margin:6px 0 10px">間違えた単語を、<br>自分の力に。</h1><p class="small subtle">左スワイプしたカードは自動登録。その後、右スワイプを2回続けると「克服済み」になります。</p>
   <div class="metrics" style="grid-template-columns:1fr 1fr">${metricNumber(total,'復習待ち')}${metricNumber(seen.length-total,'克服済み')}</div>
   <div class="tabs">${[['active','復習待ち'],['graduated','克服済み'],['all','間違えた履歴']].map(([id,label])=>`<button class="tab ${reviewTab===id?'active':''}" data-review-tab="${id}">${label}</button>`).join('')}</div>
-  ${reviewTab==='active'&&total?`<button class="primary-btn mb-20" data-action="start-review">復習を始める（最大${Math.min(total,Number(state.ui.size)||20)}問） →</button>`:''}
+  ${reviewTab==='active'&&total?`<button class="primary-btn mb-20" data-action="start-review">復習リストからランダム出題（最大${Math.min(total,Number(state.ui.size)||20)}問） →</button>`:''}
   <div class="list-head"><h3>${reviewTab==='active'?'復習待ちのカード':reviewTab==='graduated'?'克服済み':'間違えたことがあるカード'}</h3><span class="list-count">${Math.min(list.length,reviewVisibleLimit)} / ${list.length} 件</span></div>
   ${list.length?`<div class="entry-list">${list.slice(0,reviewVisibleLimit).map(c=>entryRow(c)).join('')}</div>${list.length>reviewVisibleLimit?`<button class="secondary-btn mt-18" style="width:100%" data-action="more-review">さらに表示（残り${list.length-reviewVisibleLimit}件）</button>`:''}`:`<div class="empty"><div class="illustration">${reviewTab==='active'?'✦':'⌁'}</div><h3>ここにはまだカードがありません</h3><p>${reviewTab==='active'?'すべて覚えられています。ランダム学習を続けましょう。':'学習を重ねると履歴が表示されます。'}</p><button class="secondary-btn" data-action="go-home">ホームへ</button></div>`}`;
 }
@@ -275,7 +277,7 @@ function renderSettings(){
     <button class="settings-button" data-action="clear-history"><span><strong class="danger">学習履歴だけを削除</strong><span>単語データは残ります</span></span><span class="arrow">›</span></button>
   </div>
   <div class="backup-note">このバージョンはクラウド同期していません。アプリの削除やSafariのサイトデータ削除などで記録が失われることがあります。バックアップを定期的に保存してください。</div>
-  <p class="version">WordFlow v4.0 ・1,500項目収録 ・データは端末内に保存・追加課金なし</p>
+  <p class="version">WordFlow v5.0 ・1,500項目収録 ・データは端末内に保存・追加課金なし</p>
   <input id="importFile" type="file" accept=".json,.csv,application/json,text/csv" hidden>
   <input id="restoreFile" type="file" accept=".json,application/json" hidden>`;
 }
